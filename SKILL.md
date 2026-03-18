@@ -89,19 +89,21 @@ Reads today's entry from `daily-entries/YYYY-MM-DD.json` and submits.
 | Script | Purpose |
 |--------|---------|
 | `scripts/calendar-fetch.js` | Fetch both calendars, output all form fields |
-| `scripts/submit-daily.js` | Submit form using entry JSON file |
-| `scripts/mfa-login.js` | Interactive MFA login (headed mode) |
+| `scripts/submit-with-mfa.js` | **Primary**: Combined MFA login + form submit in one session |
+| `scripts/submit-daily.js` | Submit form using saved storageState (no MFA) |
+| `scripts/mfa-login.js` | Standalone MFA login (headed mode, saves state) |
 | `scripts/fill-form.js` | CLI form filler with `--date`, `--training`, etc. args |
 | `scripts/setup-credentials.js` | One-time credential setup |
 
 ## Automated Pipeline (via OpenClaw Cron)
 
 ```
-5:45 PM SGT → Pre-Fill cron → calendar-fetch.js → entry JSON
-6:00 PM SGT → Submit cron → submit-daily.js → form submitted
+5:45 PM SGT → Pre-Fill cron (isolated) → calendar-fetch.js → draft entry JSON
+6:00 PM SGT → Submit cron (main session) → asks Master for MFA code → 
+              submit-with-mfa.js --code CODE → login + submit in one session → done
 ```
 
-Both cron jobs run Mon-Fri only.
+**Why main session?** The submit job runs in the main session so it can ask Master Phil for the 6-digit Authenticator code. Speed is critical — the MFA code expires in ~30 seconds, so the login and submit happen in a single browser session via `submit-with-mfa.js`.
 
 ## Configuration Files
 
@@ -109,18 +111,32 @@ Both cron jobs run Mon-Fri only.
 |------|---------|-------------|
 | `config/credentials.json` | M365 email + password | ✅ |
 | `config/storageState.json` | Saved browser session (cookies) | ✅ |
+| `config/calendars.json` | Calendar URLs (contains auth tokens) | ✅ |
+| `config/calendars.json.example` | Template for calendar URLs | ❌ |
 | `config/form-values.json` | Legacy form value defaults | ❌ |
 | `daily-entries/` | Daily submission audit trail | ✅ |
 
 ## MFA Handling
 
-This skill supports Microsoft number-matching MFA:
-1. Enter email + password
-2. Authenticator app shows a 6-digit code
-3. User provides the code → entered into login page
-4. Auth state saved for ~60-90 days
+This skill supports Microsoft number-matching MFA with daily re-authentication:
 
-When auth expires (exit code 2), run `mfa-login.js` to refresh.
+**Why daily MFA?** Microsoft's Forms-specific OIDC cookie (`OIDCAuth.forms`) expires in ~1 hour. Your org's security policy requires frequent re-authentication, so a fresh login is needed each day.
+
+**Daily flow:**
+1. 6 PM cron triggers in main session → asks Master for 6-digit Authenticator code
+2. Code entered immediately via `submit-with-mfa.js` (login + submit in ONE browser session)
+3. The browser stays open throughout — OIDC cookie is fresh at submit time
+
+**If you need to manually submit:**
+```bash
+xvfb-run --auto-servernum node scripts/submit-with-mfa.js --code XXXXXX
+```
+
+**Exit codes:**
+- `0` — Success
+- `1` — General error
+- `2` — MFA code wrong or expired
+- `3` — Form submission failed
 
 ## Troubleshooting
 
