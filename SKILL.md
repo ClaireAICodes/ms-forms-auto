@@ -1,11 +1,11 @@
 ---
 name: ms-forms-auto
-description: Automate Microsoft Forms submission using Playwright with M365 auto-login. Use when: automating daily/regular MS Forms reports, submitting responses to Microsoft Forms programmatically, setting up scheduled form submissions, or working with org MS Forms that require authentication. Triggers on phrases like "fill out MS form", "automate form submission", "daily form report", "submit Microsoft form", "org daily log".
+description: Automate Microsoft Forms submission with dual-calendar integration and M365 MFA support. Use when: automating daily productivity log submissions, submitting Microsoft Forms with calendar-based auto-fill, setting up scheduled form submissions with training/content-dev/learning hour calculations, or working with org MS Forms that require M365 number-matching MFA. Triggers on phrases like "fill out MS form", "automate form submission", "daily form report", "submit Microsoft form", "daily productivity log", "training hours form".
 ---
 
 # MS Forms Auto
 
-Automate Microsoft Forms submission with headless Playwright and M365 auto-login.
+Automate Microsoft Forms submission with Playwright, dual-calendar auto-fill, and M365 number-matching MFA support.
 
 ## Quick Start
 
@@ -23,88 +23,108 @@ npx playwright install chromium
 node scripts/setup-credentials.js
 ```
 
-This interactively prompts for M365 email/password and saves to `config/credentials.json` (gitignored).
+Creates `config/credentials.json` (gitignored) with M365 email/password.
 
-### 3. Configure Form Values
-
-Edit `config/form-values.json` with your daily default answers. Structure:
-
-```json
-{
-  "defaults": {
-    "<question-id-or-ordinal>": "<value>"
-  },
-  "perDate": {
-    "2026-03-18": {
-      "<question-id>": "<override>"
-    }
-  }
-}
-```
-
-- **defaults**: Used when no per-date override exists
-- **perDate**: Specific overrides for particular dates (checked first)
-
-### 4. Test Submission
+### 3. First Login with MFA
 
 ```bash
-node scripts/submit.js --dry-run    # Preview values without submitting
-node scripts/submit.js              # Submit for real
+xvfb-run --auto-servernum node scripts/mfa-login.js
 ```
 
-### 5. Schedule (cron)
+When prompted, enter the 6-digit code from your Authenticator app. Saves auth state to `config/storageState.json` for headless reuse.
+
+### 4. Fetch Calendar Data
 
 ```bash
-# Daily at 5:30 PM SGT (09:30 UTC)
-node scripts/submit.js --cron "30 9 * * 1-5"
+node scripts/calendar-fetch.js              # Today (SGT)
+node scripts/calendar-fetch.js --date 2026-03-18  # Specific date
 ```
 
-Or use OpenClaw cron:
+Returns JSON with all form fields auto-populated from both calendars.
 
-```json
-{
-  "name": "MS Forms Daily Report",
-  "schedule": { "kind": "cron", "expr": "30 9 * * 1-5", "tz": "Asia/Singapore" },
-  "payload": { "kind": "agentTurn", "message": "Submit the daily MS Form report using ms-forms-auto skill. Check config/form-values.json for today's values." },
-  "sessionTarget": "isolated"
-}
+### 5. Submit the Form
+
+```bash
+node scripts/submit-daily.js
 ```
 
-## How It Works
+Reads today's entry from `daily-entries/YYYY-MM-DD.json` and submits.
 
-1. **Auth**: Launches headless Chromium, loads saved session from `config/auth-state.json`
-2. **Login**: If session expired, auto-login with credentials from `config/credentials.json`
-3. **Navigate**: Opens the form URL from `config/form-structure.json`
-4. **Fill**: Matches question IDs to values from `config/form-values.json`
-5. **Submit**: Clicks submit button, waits for confirmation
-6. **Save**: Persists updated auth state for next run
+## Architecture
 
-## Auth State Management
+### Dual Calendar System
 
-- `config/auth-state.json` — saved Playwright browser session (cookies, localStorage)
-- Sessions typically last days-weeks depending on org M365 policy
-- When expired, auto-login refreshes it transparently
-- If MFA is required, script will prompt for interactive approval
+| Calendar | URL Source | Purpose |
+|----------|-----------|---------|
+| **Training (TMS)** | Built into script | Training Hours (source of truth) |
+| **Outlook** | Built into script | Content Dev Hours, Other Items |
+
+### Field Logic
+
+| # | Field | Source |
+|---|-------|--------|
+| 1 | Date | Today (M/d/yyyy) |
+| 2 | Training Hours | Training calendar events |
+| 3 | Content Dev Hours | Outlook calendar (content dev blockouts) |
+| 4 | Content Dev Topic | Event description from Outlook |
+| 5 | Learning Hours | `max(0, 8 - training - contentDev)` |
+| 6 | Learning Topic | 2-3 random topics + any KT Sessions |
+| 7 | Other Items | "Preparation, testing, and rehearsal for my next class" + Outlook events (excludes KT Sessions, training duplicates) |
+| 8 | Team Hours | Blank |
+| 9 | Team Description | Blank |
+
+### Fallback Defaults (if calendars fail)
+
+| Field | Fallback |
+|-------|----------|
+| Training Hours | 0 |
+| Content Dev Hours | 0 |
+| Content Dev Topic | NA |
+| Learning Hours | 8 |
+| Learning Topic | 3 random topics from pool |
+| Other Items | "Preparation, testing, and rehearsal for my next class" |
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/calendar-fetch.js` | Fetch both calendars, output all form fields |
+| `scripts/submit-daily.js` | Submit form using entry JSON file |
+| `scripts/mfa-login.js` | Interactive MFA login (headed mode) |
+| `scripts/fill-form.js` | CLI form filler with `--date`, `--training`, etc. args |
+| `scripts/setup-credentials.js` | One-time credential setup |
+
+## Automated Pipeline (via OpenClaw Cron)
+
+```
+5:45 PM SGT → Pre-Fill cron → calendar-fetch.js → entry JSON
+6:00 PM SGT → Submit cron → submit-daily.js → form submitted
+```
+
+Both cron jobs run Mon-Fri only.
 
 ## Configuration Files
 
 | File | Purpose | Gitignored? |
 |------|---------|-------------|
-| `config/credentials.json` | M365 email + password | ✅ Yes |
-| `config/auth-state.json` | Saved browser session | ✅ Yes |
-| `config/form-values.json` | Daily answer values | ❌ No (no secrets) |
-| `config/form-structure.json` | Form URL + question IDs | ❌ No |
+| `config/credentials.json` | M365 email + password | ✅ |
+| `config/storageState.json` | Saved browser session (cookies) | ✅ |
+| `config/form-values.json` | Legacy form value defaults | ❌ |
+| `daily-entries/` | Daily submission audit trail | ✅ |
 
-## Adding New Forms
+## MFA Handling
 
-1. Run: `node scripts/extract-form.js <form-url>` to discover question IDs
-2. Add form structure to `config/form-structure.json`
-3. Add default values to `config/form-values.json`
-4. Run with `--form <form-name>` to target specific form
+This skill supports Microsoft number-matching MFA:
+1. Enter email + password
+2. Authenticator app shows a 6-digit code
+3. User provides the code → entered into login page
+4. Auth state saved for ~60-90 days
+
+When auth expires (exit code 2), run `mfa-login.js` to refresh.
 
 ## Troubleshooting
 
-- **Login fails**: Delete `config/auth-state.json` and re-run (forces fresh login)
-- **MFA required**: Run with `--headed` flag to approve MFA interactively, then session saves
-- **Form structure changed**: Re-run `extract-form.js` to update question IDs
-- **Values not matching**: Check question IDs in `form-structure.json` match `form-values.json`
+- **Auth expired**: Run `xvfb-run --auto-servernum node scripts/mfa-login.js` with a fresh Authenticator code
+- **Calendar fetch fails**: Script uses graceful fallbacks (0/NA defaults), form still submits
+- **Form URL changed**: Update the URL in `scripts/submit-daily.js`
+- **Wrong field values**: Run `node scripts/calendar-fetch.js --date YYYY-MM-DD` to verify calendar data
