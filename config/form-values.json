@@ -1,0 +1,55 @@
+{
+  "daily-org-report": {
+    "defaults": {
+      "1": "TODAY",
+      "2": "0",
+      "3": "0",
+      "4": "NA",
+      "5": "0",
+      "6": "NA",
+      "7": "",
+      "8": "",
+      "9": ""
+    },
+    "perDate": {
+      "2026-03-18": {
+        "2": "4",
+        "3": "2",
+        "4": "AI Fundamentals - Modules 1-3",
+        "5": "1",
+        "6": "Web3 DeFi protocols"
+      },
+      "2026-03-19": {
+        "2": "6",
+        "4": "Cloud Architecture - Full day workshop",
+        "5": "0",
+        "6": "NA"
+      }
+    }
+  }
+}
+
+/*
+ * HOW TO USE:
+ *
+ * "defaults" — values used when no per-date override exists
+ *   - Keys are question ordinals ("1" through "9") or question IDs
+ *   - "TODAY" is a special value that auto-fills with today's date (SGT)
+ *   - Empty string "" means skip (only for optional questions)
+ *
+ * "perDate" — date-specific overrides (merged on top of defaults)
+ *   - Format: "YYYY-MM-DD"
+ *   - Only include fields that differ from defaults
+ *   - Useful for varying daily activities
+ *
+ * EXAMPLES:
+ *
+ * Default "0" for all hours, "NA" for text → submits a no-activity day:
+ *   "2": "0", "3": "0", "4": "NA", "5": "0", "6": "NA"
+ *
+ * Teaching day:
+ *   "2": "6", "3": "0", "4": "NA", "5": "0", "6": "NA"
+ *
+ * Content development day:
+ *   "2": "0", "3": "4", "4": "AI Fundamentals - Module 5", "5": "1", "6": "Reviewed latest GPT-4 paper"
+ */

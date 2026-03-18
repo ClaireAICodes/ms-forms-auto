@@ -1,0 +1,16 @@
+# Credentials & Auth (NEVER commit these)
+config/credentials.json
+config/auth-state.json
+config/.browser-profile/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
