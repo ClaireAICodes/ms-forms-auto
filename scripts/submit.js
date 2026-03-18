@@ -28,6 +28,7 @@ function parseArgs() {
   return {
     dryRun: args.includes('--dry-run'),
     headed: args.includes('--headed'),
+    mfa: args.includes('--mfa'),
     date: args.find(a => a.startsWith('--date='))?.split('=')[1] || todayStr(),
     form: args.find(a => a.startsWith('--form='))?.split('=')[1] || null,
     help: args.includes('--help') || args.includes('-h'),
@@ -80,69 +81,121 @@ function loadValues(formName, date) {
   return { ...defaults, ...dateOverrides };
 }
 
-// --- M365 Login ---
-async function ensureLoggedIn(page, credentials, dryRun) {
-  // Check if we're already logged in by navigating to M365
+function resolveValue(value, questionType) {
+  if (value === 'TODAY' && questionType === 'date') {
+    const now = new Date();
+    const sgt = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+    return sgt.toISOString().split('T')[0]; // YYYY-MM-DD
+  }
+  return value;
+}
+async function ensureLoggedIn(page, credentials, formUrl, dryRun) {
   console.log('🔐 Checking authentication status...');
   
-  await page.goto('https://forms.cloud.microsoft', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await page.waitForTimeout(3000);
+  // Navigate to the form
+  await page.goto(formUrl, { waitUntil: 'networkidle', timeout: 60000 });
   
-  // If we see a sign-in button, we need to log in
-  const signInButton = await page.$('a[href*="signin"], button:has-text("Sign in"), [data-automation-id="signInButton"]');
+  // The OAuth redirect happens via JS ~5-8s after page load, so poll for it
+  let needsLogin = false;
+  for (let i = 0; i < 6; i++) {
+    await page.waitForTimeout(2000);
+    const url = page.url();
+    if (url.includes('login.microsoftonline.com') || url.includes('oauth2')) {
+      needsLogin = true;
+      break;
+    }
+  }
   
-  if (signInButton) {
-    console.log('🔑 Session expired, logging in with credentials...');
+  if (needsLogin) {
+    console.log('🔑 Not logged in, authenticating with credentials...');
     
     if (dryRun) {
       console.log('   [DRY RUN] Would log in with:', credentials.email);
-      return;
+      console.log('   [DRY RUN] Cannot proceed without auth — run without --dry-run to test login.');
+      return false;
     }
     
-    // Click sign in
-    await signInButton.click();
-    await page.waitForTimeout(2000);
+    // Wait for email input
+    await page.waitForSelector('input[type="email"], input[name="loginfmt"]', { timeout: 10000 });
     
     // Enter email
-    const emailInput = await page.waitForSelector('input[type="email"], input[name="loginfmt"]', { timeout: 10000 });
+    const emailInput = await page.$('input[type="email"], input[name="loginfmt"]');
     await emailInput.fill(credentials.email);
     
     // Click Next
-    const nextBtn = await page.$('input[type="submit"][value="Next"], button:has-text("Next")');
+    const nextBtn = await page.$('input[type="submit"][value="Next"], button[type="submit"]');
     if (nextBtn) await nextBtn.click();
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(4000);
     
     // Enter password
-    const passwordInput = await page.waitForSelector('input[type="password"], input[name="passwd"]', { timeout: 10000 });
+    await page.waitForSelector('input[type="password"], input[name="passwd"]', { timeout: 10000 });
+    const passwordInput = await page.$('input[type="password"], input[name="passwd"]');
     await passwordInput.fill(credentials.password);
     
     // Click Sign In
-    const signInBtn = await page.$('input[type="submit"][value="Sign in"], button:has-text("Sign in")');
-    if (signInBtn) await signInBtn.click();
+    const loginBtn = await page.$('input[type="submit"][value="Sign in"], button[type="submit"]');
+    if (loginBtn) await loginBtn.click();
     await page.waitForTimeout(5000);
     
     // Check for MFA prompt
-    const mfaPrompt = await page.$('text=Approve sign-in request, text=Enter code, text=More information required');
-    if (mfaPrompt) {
-      console.log('⚠️  MFA required! Waiting 60 seconds for approval...');
-      console.log('   Check your phone and approve the sign-in request.');
-      await page.waitForTimeout(60000);
+    const currentUrlAfterLogin = page.url();
+    const mfaPrompt = await page.$('text=Enter code, text=authenticator, text=identity verification, text=Approve sign-in');
+    const onLoginPage = currentUrlAfterLogin.includes('login.microsoftonline.com');
+    
+    if (mfaPrompt || onLoginPage) {
+      if (dryRun) {
+        console.log('   [DRY RUN] MFA/verification required — cannot proceed in dry-run.');
+        return false;
+      }
+      
+      console.log('⚠️  MFA/verification required!');
+      console.log('   📱 Please check your Microsoft Authenticator app and APPROVE the sign-in.');
+      console.log('   ⏳ Waiting up to 120 seconds for approval...');
+      
+      // Poll for redirect away from login page
+      const mfaStart = Date.now();
+      const mfaTimeout = 120000; // 2 minutes
+      let mfaApproved = false;
+      
+      while (Date.now() - mfaStart < mfaTimeout) {
+        await page.waitForTimeout(3000);
+        const url = page.url();
+        if (!url.includes('login.microsoftonline.com')) {
+          mfaApproved = true;
+          break;
+        }
+      }
+      
+      if (!mfaApproved) {
+        console.log('❌ MFA approval timed out after 120 seconds.');
+        console.log('   Run again and approve faster, or check your phone.');
+        return false;
+      }
+      
+      console.log('✅ MFA approved!');
     }
     
     // Check for "Stay signed in?" prompt
+    await page.waitForTimeout(2000);
     const staySignedIn = await page.$('input[value="Yes"], button:has-text("Yes")');
     if (staySignedIn) {
       await staySignedIn.click();
       await page.waitForTimeout(2000);
     }
     
+    // Wait for redirect back to form
+    await page.waitForTimeout(5000);
+    
     console.log('✅ Login successful!');
+    console.log('   Now on:', page.url());
     
     // Save auth state
     await page.context().storageState({ path: AUTH_STATE_PATH });
     console.log('💾 Auth state saved.');
+    return true;
   } else {
     console.log('✅ Already logged in (session valid).');
+    return true;
   }
 }
 
@@ -161,7 +214,8 @@ async function fillAndSubmit(page, form, values, dryRun) {
   let filledCount = 0;
   
   for (const q of questions) {
-    const value = values[q.id] ?? values[String(q.ordinal)] ?? null;
+    const rawValue = values[q.id] ?? values[String(q.ordinal)] ?? null;
+    const value = rawValue !== null ? resolveValue(rawValue, q.type) : null;
     
     if (value === null || value === undefined) {
       if (q.required) {
@@ -281,15 +335,20 @@ Usage:
   console.log(`   Values: ${JSON.stringify(values, null, 2).split('\n').length - 1} fields\n`);
   
   // Launch browser
+  const isHeaded = args.headed || args.mfa;
   const launchOptions = {
-    headless: !args.headed,
+    headless: !isHeaded,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   };
+  
+  if (args.mfa) {
+    console.log('📱 MFA MODE — Awaiting your phone approval. You have 120 seconds.');
+  }
   
   let context;
   
   // Try to use saved auth state
-  if (fs.existsSync(AUTH_STATE_PATH)) {
+  if (fs.existsSync(AUTH_STATE_PATH) && !args.mfa) {
     console.log('📂 Loading saved auth state...');
     context = await chromium.launchPersistentContext(
       path.join(CONFIG_DIR, '.browser-profile'),
@@ -303,8 +362,14 @@ Usage:
   const page = context.pages()[0] || await context.newPage();
   
   try {
-    // Ensure logged in
-    await ensureLoggedIn(page, credentials, args.dryRun);
+    // Ensure logged in (checks form URL for redirect to login)
+    const loggedIn = await ensureLoggedIn(page, credentials, form.url, args.dryRun);
+    
+    if (!loggedIn) {
+      console.log('\n🏁 DRY RUN — Cannot submit without authentication.');
+      await context.close();
+      process.exit(0);
+    }
     
     // Fill and submit
     const result = await fillAndSubmit(page, form, values, args.dryRun);

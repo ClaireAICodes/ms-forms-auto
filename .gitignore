@@ -1,7 +1,12 @@
 # Credentials & Auth (NEVER commit these)
 config/credentials.json
 config/auth-state.json
+config/storageState.json
 config/.browser-profile/
+config/*.png
+
+# Local data
+daily-entries/
 
 # Node
 node_modules/
