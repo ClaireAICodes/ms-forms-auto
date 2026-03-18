@@ -9,7 +9,8 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
-const CONFIG_DIR = path.join(__dirname, 'config');
+const ROOT_DIR = path.resolve(path.join(__dirname, '..'));
+const CONFIG_DIR = path.join(ROOT_DIR, 'config');
 const AUTH_STATE = path.join(CONFIG_DIR, 'storageState.json');
 const FORM_URL = 'https://forms.cloud.microsoft/r/LsxLaEv13i';
 
