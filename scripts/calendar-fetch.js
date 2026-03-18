@@ -13,9 +13,26 @@
  */
 
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 
-const TRAINING_CAL_URL = 'https://tms.adroit-lms.com/api/ical/trainer/727f70c48dfe571b43c6266b429b84a23940190b6be007291ee08efba3b80c17.ics';
-const OUTLOOK_CAL_URL = 'https://outlook.office365.com/owa/calendar/4c1c961e569741ebbece711f2ecafea9@xaltius.tech/93f7c747e6c14d8ba85aa9b4dea42aeb3569881685827648421/calendar.ics';
+// Load calendar URLs from config (falls back to example)
+function loadCalendarUrls() {
+  const configDir = path.join(__dirname, '..', 'config');
+  const configFile = path.join(configDir, 'calendars.json');
+  const exampleFile = path.join(configDir, 'calendars.json.example');
+  
+  const source = fs.existsSync(configFile) ? configFile : exampleFile;
+  const config = JSON.parse(fs.readFileSync(source, 'utf-8'));
+  
+  if (!config.training || config.training.includes('YOUR_')) {
+    throw new Error('Missing config/calendars.json — run: cp config/calendars.json.example config/calendars.json and add your URLs');
+  }
+  
+  return config;
+}
+
+const { training: TRAINING_CAL_URL, outlook: OUTLOOK_CAL_URL } = loadCalendarUrls();
 
 const CONTENT_DEV_KEYWORDS = [
   'content dev', 'content development', 'course dev', 'course development',

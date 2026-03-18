@@ -1,7 +1,8 @@
-# Credentials & Auth (NEVER commit these)
+# Credentials, Auth & Calendar URLs (NEVER commit these)
 config/credentials.json
 config/auth-state.json
 config/storageState.json
+config/calendars.json
 config/.browser-profile/
 config/*.png
 

@@ -1,0 +1,4 @@
+{
+  "training": "https://tms.adroit-lms.com/api/ical/trainer/YOUR_TRAINING_CALENDAR_TOKEN.ics",
+  "outlook": "https://outlook.office365.com/owa/calendar/YOUR_EMAIL@domain/YOUR_CALENDAR_TOKEN/calendar.ics"
+}
