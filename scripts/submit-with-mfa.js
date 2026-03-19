@@ -69,10 +69,35 @@ async function loginWithMFA(page, code) {
       if (signInBtn) await signInBtn.click();
     }
     await page.waitForTimeout(3000);
+    
+    // Check for error messages after credential entry
+    const pageContent = await page.content();
+    if (pageContent.includes('Incorrect') || pageContent.includes('Invalid') || pageContent.includes('error')) {
+      throw new Error('Login failed: Invalid email or password, or account locked');
+    }
   }
 
-  // MFA challenge
-  const codeInput = await page.$('input[type="tel"]');
+  // MFA challenge - use broad detection
+  let codeInput = await page.$('input[type="tel"]');
+  if (!codeInput) {
+    codeInput = await page.$('input[placeholder*="code" i]');
+  }
+  if (!codeInput) {
+    codeInput = await page.$('input[name*="verification" i]');
+  }
+  if (!codeInput) {
+    // Find any visible input not already used
+    const allInputs = await page.$$('input');
+    for (const inp of allInputs) {
+      const type = await inp.getAttribute('type') || '';
+      const placeholder = await inp.getAttribute('placeholder') || '';
+      if ((type === 'tel' || type === 'text' || type === 'number') && 
+          (placeholder.includes('code') || placeholder.includes('verification') || placeholder.includes('digit'))) {
+        codeInput = inp;
+        break;
+      }
+    }
+  }
   if (codeInput) {
     console.log('🔢 Entering MFA code...');
     await codeInput.fill(code);
@@ -85,6 +110,12 @@ async function loginWithMFA(page, code) {
     if (yesBtn) {
       await yesBtn.click();
       await page.waitForTimeout(3000);
+    }
+    
+    // Check for MFA errors
+    const afterMFAContent = await page.content();
+    if (afterMFAContent.includes('Incorrect') || afterMFAContent.includes('Invalid') || afterMFAContent.includes('code is incorrect')) {
+      throw new Error('MFA code wrong or expired');
     }
     
     // Wait for redirect back to form
