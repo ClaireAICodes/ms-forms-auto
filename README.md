@@ -25,7 +25,8 @@ Learning Hours are auto-calculated as `8 - Training - Content Dev` to ensure an 
 | Script | Purpose |
 |--------|---------|
 | `scripts/calendar-fetch.js` | Fetch both calendars, output all form fields as JSON |
-| `scripts/submit-daily.js` | Submit form using saved auth + entry JSON |
+| `scripts/submit-daily.js` | Submit form using saved auth + entry JSON. Supports `--code XXXXXX` for MFA when needed |
+| `scripts/submit-with-mfa.js` | Combined MFA login + submit in one session (for manual runs) |
 | `scripts/mfa-login.js` | Interactive MFA login (headed mode, saves auth state) |
 | `scripts/fill-form.js` | CLI form filler with argument flags |
 | `scripts/setup-credentials.js` | One-time credential setup |
@@ -65,12 +66,26 @@ node scripts/calendar-fetch.js --date 2026-03-18  # Specific date
 ### 5. Submit Form
 
 ```bash
-# Using an entry file
-echo '{"date":"3/18/2026","trainingHours":"3",...}' > daily-entries/2026-03-18.json
+# Normal cron mode (uses stored auth state)
 node scripts/submit-daily.js
 
-# Or directly with CLI flags
-node scripts/fill-form.js --date "3/18/2026" --training 3 --content-dev 0 --learning 5
+# If auth is expired and MFA is required, use --code flag:
+node scripts/submit-daily.js --code 123456
+
+# Or specify a date (for backfilling)
+node scripts/submit-daily.js --date 2026-03-18 --code 123456
+```
+
+The `submit-daily.js` script will:
+- Try existing auth state first
+- If that fails and credentials-only login works, submit automatically
+- If MFA is required, you must provide `--code` (MFA codes expire quickly!)
+- After a successful MFA login, auth state is saved for future runs
+
+Alternatively, use `submit-with-mfa.js` for a combined login+submit in one session:
+
+```bash
+xvfb-run --auto-servernum node scripts/submit-with-mfa.js --code 123456
 ```
 
 ## Field Logic
