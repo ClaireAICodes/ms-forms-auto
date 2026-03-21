@@ -53,91 +53,243 @@ if (!requireMFAAutoDetect && !mfaCode) {
   process.exit(2);
 }
 
+/**
+ * Robust selector system for Microsoft login pages
+ */
+class MicrosoftLoginSelectors {
+  static EMAIL_INPUTS = [
+    'input[type="email"]',
+    'input[name="loginfmt"]',
+    'input[name="username"]',
+    'input[name="email"]',
+    'input[id="i0116"]',
+    'input[autocomplete="username"]',
+    'input[placeholder*="email" i]',
+    'input[placeholder*="Email" i]',
+    'input[placeholder*="user" i]',
+    'input[placeholder*="account" i]'
+  ];
+
+  static PASSWORD_INPUTS = [
+    'input[type="password"]',
+    'input[name="passwd"]',
+    'input[name="password"]',
+    'input[id="i0118"]',
+    'input[autocomplete="current-password"]',
+    'input[placeholder*="password" i]',
+    'input[placeholder*="Password" i]'
+  ];
+
+  static SUBMIT_BUTTONS = [
+    'input[type="submit"][value="Next"]',
+    'input[type="submit"][value="Sign in"]',
+    'button[type="submit"]',
+    'button:has-text("Next")',
+    'button:has-text("Sign in")',
+    'input#idSIButton9',
+    '#idSIButton9',
+    'button[data-testid="primaryButton"]'
+  ];
+
+  static MFA_INPUTS = [
+    'input[type="tel"]',
+    'input[name="otc"]',
+    'input[name="verification"]',
+    'input[name="code"]',
+    'input[id="idTxtBx_OTC"]',
+    'input[placeholder*="code" i]',
+    'input[placeholder*="verification" i]',
+    'input[placeholder*="digit" i]',
+    'input[aria-label*="code" i]',
+    'input[aria-label*="verification" i]'
+  ];
+
+  static STAY_SIGNED_BUTTONS = [
+    'input[type="submit"][value="Yes"]',
+    'button:has-text("Yes")',
+    'button:has-text("Stay signed in")',
+    'input#idBtn_Back'
+  ];
+
+  /**
+   * Find first visible element matching any selector in the list
+   */
+  static async findElement(page, selectors) {
+    for (const selector of selectors) {
+      try {
+        const el = await page.$(selector);
+        if (el && await el.isVisible()) {
+          return el;
+        }
+      } catch (e) {
+        //Try next selector
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Check if page is on Microsoft login domain
+   */
+  static isLoginPage(url) {
+    return url.includes('login.microsoftonline.com') || 
+           url.includes('login.live.com') ||
+           url.includes('account.activedirectory.windowsazure.com');
+  }
+}
+
 async function smartLogin(page, creds) {
   console.log('🔐 Navigating to form...');
   await page.goto(FORM_URL, { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(5000);
 
-  // Check if already on form (already authenticated via storageState)
-  const currentUrl = page.url();
-  if (!currentUrl.includes('login.microsoftonline.com')) {
-    console.log('✅ Already authenticated (storageState valid)');
+  // Detect if already authenticated: look for absence of login indicators
+  const emailPresent = await page.$('input[type="email"], input[name="loginfmt"], input[autocomplete="username"]');
+  const onLoginDomain = MicrosoftLoginSelectors.isLoginPage(page.url());
+  
+  if (!onLoginDomain && !emailPresent) {
+    console.log('✅ Already authenticated (no login indicators)');
     return true;
+  }
+  
+  // If email field is present, we need to login regardless of URL
+  if (emailPresent) {
+    console.log('🔑 Email field detected - login required');
+  } else if (onLoginDomain) {
+    console.log('🔑 On login domain - login required');
+  } else {
+    // Edge case: check for submit button to see if we're actually on form
+    const submitBtn = await page.$('button[data-automation-id="submitButton"]');
+    if (submitBtn) {
+      console.log('✅ Submit button found - on form page');
+      return true;
+    }
+    console.log('⚠️  Unclear state - attempting login anyway');
   }
 
   console.log('📧 Entering email...');
-  const emailInput = await page.$('input[type="email"]');
+  const emailInput = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.EMAIL_INPUTS);
   if (!emailInput) {
-    throw new Error('Email input not found on login page');
+    throw new Error('Email input not found on login page - Microsoft may have changed the page structure');
   }
+  
   await emailInput.fill(creds.email);
-  const nextBtn = await page.$('input[type="submit"][value="Next"]');
-  if (nextBtn) await nextBtn.click();
+  await emailInput.dispatchEvent('input'); // Trigger React/Vue bindings
+  await page.waitForTimeout(1000);
+  
+  // Find and click next button
+  const nextBtn = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.SUBMIT_BUTTONS);
+  if (nextBtn) {
+    await nextBtn.click();
+    console.log('   Clicked Next');
+  } else {
+    // Try pressing Enter as fallback
+    console.log('   No Next button found, pressing Enter...');
+    await page.keyboard.press('Enter');
+  }
+  
   await page.waitForTimeout(4000);
 
   console.log('🔑 Entering password...');
-  const pwdField = await page.$('input[type="password"]');
+  const pwdField = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.PASSWORD_INPUTS);
   if (!pwdField) {
-    throw new Error('Password input not found');
+    throw new Error('Password input not found on login page');
   }
+  
   await pwdField.fill(creds.password);
-  const signInBtn = await page.$('input[type="submit"][value="Sign in"]');
-  if (signInBtn) await signInBtn.click();
+  await pwdField.dispatchEvent('input');
+  await page.waitForTimeout(1000);
+  
+  // Find and click sign-in button
+  const signInBtn = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.SUBMIT_BUTTONS);
+  if (signInBtn) {
+    await signInBtn.click();
+    console.log('   Clicked Sign in');
+  } else {
+    console.log('   No Sign-in button found, pressing Enter...');
+    await page.keyboard.press('Enter');
+  }
+  
   await page.waitForTimeout(3000);
-
-  // Check for immediate error after credentials
+  
+  // Check for error messages after credential entry
   const pageContent = await page.content();
-  if (pageContent.includes('Incorrect') || pageContent.includes('Invalid') || pageContent.includes('error') || pageContent.includes('locked')) {
+  if (pageContent.includes('Incorrect') || pageContent.includes('Invalid') || 
+      pageContent.includes('error') || pageContent.includes('locked') ||
+      pageContent.includes('account doesn\'t exist')) {
     throw new Error('Login failed: Invalid email/password or account locked');
   }
 
   // Detect if MFA is required
+  console.log('🔍 Checking for MFA challenge...');
   let mfaDetected = false;
-  let codeInput = await page.$('input[type="tel"]');
-  if (!codeInput) codeInput = await page.$('input[placeholder*="code" i]');
-  if (!codeInput) codeInput = await page.$('input[name*="verification" i]');
+  let codeInput = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.MFA_INPUTS);
   
-  if (!codeInput) {
-    // Broad search for any input that looks like verification
-    const allInputs = await page.$$('input');
-    for (const inp of allInputs) {
-      const type = await inp.getAttribute('type') || '';
-      const placeholder = await inp.getAttribute('placeholder') || '';
-      const name = await inp.getAttribute('name') || '';
-      if ((type === 'tel' || type === 'text' || type === 'number') && 
-          (placeholder.includes('code') || placeholder.includes('verification') || placeholder.includes('digit') ||
-           name.includes('verification') || name.includes('code'))) {
-        codeInput = inp;
-        mfaDetected = true;
-        break;
+  if (codeInput) {
+    mfaDetected = true;
+    console.log('   MFA prompt detected');
+  } else {
+    // Additional detection: check page text for MFA indicators
+    const text = await page.textContent('body') || '';
+    if (text.includes('verify') || text.includes('authentication') || 
+        text.includes('two-step') || text.includes('security code')) {
+      console.log('   MFA indicators found in page text');
+      mfaDetected = true;
+      // Try one more broad search for any numeric input
+      const allInputs = await page.$$('input');
+      for (const inp of allInputs) {
+        const type = await inp.getAttribute('type') || '';
+        const maxLength = await inp.getAttribute('maxlength') || '';
+        if ((type === 'tel' || type === 'number' || type === 'text') && maxLength === '6') {
+          codeInput = inp;
+          console.log('   Found 6-digit input field');
+          break;
+        }
       }
     }
-  } else {
-    mfaDetected = true;
   }
 
   // If MFA detected
   if (mfaDetected) {
-    console.log('🔐 MFA challenge detected');
-    
     if (mfaCode) {
       // Code provided - enter it
       console.log('🔢 Entering MFA code...');
+      if (!codeInput) {
+        throw new Error('MFA detected but no input field found for code');
+      }
       await codeInput.fill(mfaCode);
-      const submitBtn = await page.$('input[type="submit"]');
-      if (submitBtn) await submitBtn.click();
+      await codeInput.dispatchEvent('input');
+      await page.waitForTimeout(500);
+      
+      // Submit MFA code
+      const submitBtn = await MicrosoftLoginSelectors.findElement(page, [
+        'input[type="submit"]',
+        'button[type="submit"]',
+        'button:has-text("Verify")',
+        'button:has-text("Submit")'
+      ]);
+      
+      if (submitBtn) {
+        await submitBtn.click();
+        console.log('   Submitted MFA code');
+      } else {
+        await page.keyboard.press('Enter');
+      }
+      
       await page.waitForTimeout(4000);
 
       // "Stay signed in?" prompt
-      const yesBtn = await page.$('input[type="submit"][value="Yes"]');
+      const yesBtn = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.STAY_SIGNED_BUTTONS);
       if (yesBtn) {
         await yesBtn.click();
+        console.log('   Clicked "Yes" on stay signed in');
         await page.waitForTimeout(3000);
       }
-
+      
       // Check for MFA errors
       const afterMFAContent = await page.content();
-      if (afterMFAContent.includes('Incorrect') || afterMFAContent.includes('Invalid') || afterMFAContent.includes('code is incorrect')) {
+      if (afterMFAContent.includes('Incorrect') || afterMFAContent.includes('Invalid') || 
+          afterMFAContent.includes('code is incorrect')) {
         throw new Error('MFA code wrong or expired');
       }
       
@@ -145,12 +297,14 @@ async function smartLogin(page, creds) {
     } else {
       // No code available and MFA detected - we can't proceed
       console.error('❌ MFA required but no code provided. Use --code flag.');
-      console.log('   Waiting 30s for manual code entry (optional)...');
+      console.log('   Waiting 30 seconds for potential manual code entry...');
+      
       // Keep browser open for 30s in case user wants to manually enter
+      // The browser window will be visible if running headed
       await page.waitForTimeout(30000);
       
       // Check if we're still on login page
-      if (page.url().includes('login.microsoftonline.com')) {
+      if (MicrosoftLoginSelectors.isLoginPage(page.url())) {
         throw new Error('MFA required but no code provided');
       }
       // If somehow we got past MFA (user manually entered), continue
@@ -160,7 +314,7 @@ async function smartLogin(page, creds) {
   }
 
   // Final check: Are we on the form?
-  if (page.url().includes('login.microsoftonline.com')) {
+  if (MicrosoftLoginSelectors.isLoginPage(page.url())) {
     throw new Error('Authentication failed: Still on login page');
   }
 
@@ -180,22 +334,82 @@ async function fillAndSubmit(page, dateStr) {
 
   await page.waitForTimeout(3000);
 
-  // Scroll to load all fields
+  // Scroll to load all lazy fields
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForTimeout(2000);
 
-  // Collect visible text inputs
-  const allInputs = await page.$$('input');
-  const textInputs = [];
-  for (const inp of allInputs) {
-    const type = await inp.getAttribute('type');
-    const visible = await inp.isVisible();
-    if (visible && (!type || type === 'text')) {
-      textInputs.push(inp);
+  // Collect visible text inputs (including iframes)
+  let allInputs = await page.$$('input');
+  console.log(`   Initial: found ${allInputs.length} total inputs on main page`);
+  
+  // If no inputs found, check iframes
+  if (allInputs.length === 0) {
+    const iframes = await page.$$('iframe');
+    console.log(`   Checking ${iframes.length} iframes...`);
+    for (const iframe of iframes) {
+      try {
+        const frame = await iframe.contentFrame();
+        if (frame) {
+          const frameInputs = await frame.$$('input');
+          console.log(`     Iframe: ${frameInputs.length} inputs`);
+          if (frameInputs.length > 0) {
+            allInputs = frameInputs;
+            break;
+          }
+        }
+      } catch (e) {
+        // Cannot access iframe (cross-origin), skip
+      }
     }
   }
 
-  console.log(`Found ${textInputs.length} input fields`);
+  // Filter to visible text inputs
+  const textInputs = [];
+  const excludedTypes = ['password', 'hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image'];
+  for (const inp of allInputs) {
+    try {
+      const type = await inp.getAttribute('type') || '';
+      const visible = await inp.isVisible();
+      // Accept any visible input except clearly interactive/irrelevant types (allow number, tel, email, etc.)
+      if (visible && !excludedTypes.includes(type)) {
+        textInputs.push(inp);
+      }
+    } catch (e) {
+      // Skip detached elements
+    }
+  }
+
+  console.log(`Found ${textInputs.length} text input fields (${allInputs.length} total)`);
+
+  // If too few inputs, dump details for debugging
+  if (textInputs.length < 5) {
+    console.log('   Debug: All input attributes:');
+    for (let i = 0; i < allInputs.length; i++) {
+      try {
+        const inp = allInputs[i];
+        const type = await inp.getAttribute('type') || '';
+        const name = await inp.getAttribute('name') || '';
+        const placeholder = await inp.getAttribute('placeholder') || '';
+        const ariaLabel = await inp.getAttribute('aria-label') || '';
+        const visible = await inp.isVisible();
+        console.log(`     [${i}] type="${type}" name="${name}" placeholder="${placeholder}" aria-label="${ariaLabel}" visible=${visible}`);
+      } catch (e) {}
+    }
+  }
+
+  // If still no inputs, take screenshot and dump some HTML for debugging
+  if (textInputs.length === 0) {
+    console.log('⚠️  No text inputs found. Saving debug info...');
+    try {
+      await page.screenshot({ path: 'form-debug.png', fullPage: true });
+      console.log('   Screenshot: form-debug.png');
+      const html = await page.content();
+      require('fs').writeFileSync('form-debug.html', html.substring(0, 10000));
+      console.log('   HTML snippet: form-debug.html');
+    } catch (e) {
+      console.log('   (Failed to save debug info)');
+    }
+  }
 
   const fields = [
     { index: 0, value: entries.date,            label: 'Date' },
@@ -215,14 +429,18 @@ async function fillAndSubmit(page, dateStr) {
       continue;
     }
     if (field.index < textInputs.length) {
-      await textInputs[field.index].click();
-      await textInputs[field.index].fill(String(field.value));
-      const placeholder = await textInputs[field.index].getAttribute('placeholder');
-      if (placeholder?.includes('number')) await page.keyboard.press('Tab');
-      console.log(`  ${field.label} → "${field.value}"`);
-      await page.waitForTimeout(200);
+      try {
+        await textInputs[field.index].click();
+        await textInputs[field.index].fill(String(field.value));
+        const placeholder = await textInputs[field.index].getAttribute('placeholder');
+        if (placeholder?.includes('number')) await page.keyboard.press('Tab');
+        console.log(`  ${field.label} → "${field.value}"`);
+        await page.waitForTimeout(200);
+      } catch (err) {
+        console.warn(`  ${field.label} → WARNING: ${err.message}`);
+      }
     } else {
-      console.warn(`  ${field.label} → WARNING: Input field ${field.index} not found`);
+      console.warn(`  ${field.label} → WARNING: Input field ${field.index} not found (only ${textInputs.length} total)`);
     }
   }
 
@@ -272,18 +490,34 @@ async function main() {
     headless: false,
     args: ['--no-sandbox']
   });
-  const page = await browser.newPage();
+
+  // Create browser context with stored auth state if available
+  const context = fs.existsSync(AUTH_STATE)
+    ? await browser.newContext({ storageState: AUTH_STATE })
+    : await browser.newContext();
+  const page = await context.newPage();
 
   try {
-    // Step 1: Smart login (handles MFA or no-MFA)
+    // Smart login: handles both cached session (no action) and fresh login (with/without MFA)
+    console.log('🔐 Starting authentication...');
     const loggedIn = await smartLogin(page, creds);
     if (!loggedIn) {
       await browser.close();
+      console.error('❌ Authentication failed');
       process.exit(2);
     }
 
-    // Step 2: Fill and submit form
+    // Fill and submit form
     const submitted = await fillAndSubmit(page, targetDate);
+    
+    // Save auth state after successful login (whether submit succeeded or not) for next time
+    try {
+      await context.storageState({ path: AUTH_STATE });
+      console.log('💾 Auth state saved.');
+    } catch (e) {
+      console.log('⚠️  Could not save auth state:', e.message);
+    }
+
     await browser.close();
 
     if (submitted) {
