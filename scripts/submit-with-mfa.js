@@ -141,7 +141,12 @@ class MicrosoftLoginSelectors {
 async function smartLogin(page, creds) {
   console.log('🔐 Navigating to form...');
   await page.goto(FORM_URL, { waitUntil: 'networkidle', timeout: 60000 });
-  await page.waitForTimeout(5000);
+  // Ensure any post-redirect loads settle before accessing DOM
+  try {
+    await page.waitForLoadState({ timeout: 30000 });
+  } catch (e) {
+    // Continue anyway
+  }
 
   // Detect if already authenticated: look for absence of login indicators
   const emailPresent = await page.$('input[type="email"], input[name="loginfmt"], input[autocomplete="username"]');
@@ -188,7 +193,12 @@ async function smartLogin(page, creds) {
     await page.keyboard.press('Enter');
   }
   
-  await page.waitForTimeout(4000);
+  // Wait for navigation to complete (if any) to avoid context loss
+  try {
+    await page.waitForLoadState({ timeout: 30000 });
+  } catch (e) {
+    // No navigation occurred or timeout - continue anyway
+  }
 
   console.log('🔑 Entering password...');
   const pwdField = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.PASSWORD_INPUTS);
@@ -210,7 +220,12 @@ async function smartLogin(page, creds) {
     await page.keyboard.press('Enter');
   }
   
-  await page.waitForTimeout(3000);
+  // Wait for navigation to complete (if any)
+  try {
+    await page.waitForLoadState({ timeout: 30000 });
+  } catch (e) {
+    // Continue if no navigation
+  }
 
   // Check for "Stay signed in?" prompt (common after credentials)
   const staySignedInSelectors = [
@@ -223,7 +238,12 @@ async function smartLogin(page, creds) {
   if (staySignedInBtn) {
     console.log('   "Stay signed in?" prompt detected, clicking Yes...');
     await staySignedInBtn.click();
-    await page.waitForTimeout(3000);
+    // Wait for possible navigation after confirming
+    try {
+      await page.waitForLoadState({ timeout: 30000 });
+    } catch (e) {
+      // No navigation or timeout
+    }
   }
 
   // Detect if MFA is required
@@ -282,7 +302,12 @@ async function smartLogin(page, creds) {
         await page.keyboard.press('Enter');
       }
       
-      await page.waitForTimeout(4000);
+      // Wait for navigation after MFA submission
+      try {
+        await page.waitForLoadState({ timeout: 30000 });
+      } catch (e) {
+        // Continue even if no navigation
+      }
 
       // "Stay signed in?" prompt
       const yesBtn = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.STAY_SIGNED_BUTTONS);
@@ -338,11 +363,22 @@ async function fillAndSubmit(page, dateStr) {
   const entries = JSON.parse(fs.readFileSync(entryFile, 'utf8'));
   console.log(`\n📋 Filling form for ${dateStr}...`);
 
-  await page.waitForTimeout(3000);
+  // Ensure page is fully loaded and stable after authentication
+  try {
+    await page.waitForLoadState({ timeout: 30000 });
+  } catch (e) {
+    console.log('   (Load state timeout, continuing)');
+  }
+  // Wait for the form submit button to be present (indicates form is ready)
+  try {
+    await page.waitForSelector('button[data-automation-id="submitButton"]', { timeout: 15000 });
+  } catch (e) {
+    console.log('   Submit button not found, continuing anyway...');
+  }
 
   // Scroll to load all lazy fields
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(1000);
 
   // Collect visible text inputs (including iframes)
   let allInputs = await page.$$('input');

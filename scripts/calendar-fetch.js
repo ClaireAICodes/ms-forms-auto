@@ -334,6 +334,7 @@ async function main() {
   const learningTopic = buildLearningTopic(outlookEvents);
   
   const result = {
+    status: 'draft',
     date: formatDateForForm(targetDate),
     trainingHours: Math.round(trainingHours * 100) / 100,
     trainingEvents: trainingEvents.map(e => ({ title: e.title, time: `${e.startSGT}-${e.endSGT}`, hours: e.durationHours })),
@@ -344,6 +345,8 @@ async function main() {
     learningTopic,
     otherItems,
     otherEvents: otherEvents.map(e => ({ title: e.title, time: `${e.startSGT}-${e.endSGT}`, hours: e.durationHours })),
+    teamHours: '',
+    teamDesc: '',
     _errors: errors.length > 0 ? errors : null,
   };
   
