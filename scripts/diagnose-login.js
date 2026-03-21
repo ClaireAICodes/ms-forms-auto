@@ -150,4 +150,4 @@ async function diagnose() {
   await browser.close();
 }
 
-diagnate();
+diagnose();

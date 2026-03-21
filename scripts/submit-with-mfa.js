@@ -141,64 +141,76 @@ class MicrosoftLoginSelectors {
 async function smartLogin(page, creds) {
   console.log('🔐 Navigating to form...');
   await page.goto(FORM_URL, { waitUntil: 'networkidle', timeout: 60000 });
-  // Ensure any post-redirect loads settle before accessing DOM
-  try {
-    await page.waitForLoadState({ timeout: 30000 });
-  } catch (e) {
-    // Continue anyway
-  }
-
-  // Detect if already authenticated: look for absence of login indicators
-  const emailPresent = await page.$('input[type="email"], input[name="loginfmt"], input[autocomplete="username"]');
-  const onLoginDomain = MicrosoftLoginSelectors.isLoginPage(page.url());
   
-  if (!onLoginDomain && !emailPresent) {
-    console.log('✅ Already authenticated (no login indicators)');
+  // Wait for either form page (any visible input) or login page (email field)
+  console.log('⏳ Waiting for form or login page to load...');
+  let formReady = false;
+  let loginRequired = false;
+  
+  // Poll for up to 60 seconds
+  for (let i = 0; i < 30; i++) {
+    // Check if we're on login page: look for email input
+    const emailInput = await page.$('input[type="email"], input[name="loginfmt"], input[autocomplete="username"]');
+    if (emailInput && await emailInput.isVisible()) {
+      console.log('🔑 Login page detected (email input present)');
+      loginRequired = true;
+      break;
+    }
+    
+    // Check if we're on form page: look for any visible text/number/date input (form fields)
+    const visibleInputs = await page.$$('input:visible, textarea:visible, select:visible');
+    if (visibleInputs.length > 5) {
+      console.log(`✅ Form page detected (found ${visibleInputs.length} visible inputs)`);
+      formReady = true;
+      break;
+    }
+    
+    // Wait a bit and check again
+    await page.waitForTimeout(2000);
+  }
+  
+  if (formReady) {
     return true;
   }
   
-  // If email field is present, we need to login regardless of URL
-  if (emailPresent) {
-    console.log('🔑 Email field detected - login required');
-  } else if (onLoginDomain) {
-    console.log('🔑 On login domain - login required');
-  } else {
-    // Edge case: check for submit button to see if we're actually on form
-    const submitBtn = await page.$('button[data-automation-id="submitButton"]');
-    if (submitBtn) {
-      console.log('✅ Submit button found - on form page');
-      return true;
-    }
-    console.log('⚠️  Unclear state - attempting login anyway');
+  if (!loginRequired) {
+    console.log('⚠️ Neither form nor login page detected after waiting - proceeding with login anyway');
   }
 
+  // Proceed with login flow
   console.log('📧 Entering email...');
   const emailInput = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.EMAIL_INPUTS);
   if (!emailInput) {
+    // Debug: print current URL and take screenshot
+    console.log('❌ Email input not found. Current URL:', page.url());
+    await page.screenshot({ path: path.join(__dirname, '../config/debug-email-not-found.png'), fullPage: true });
     throw new Error('Email input not found on login page - Microsoft may have changed the page structure');
   }
-  
-  await emailInput.fill(creds.email);
-  await emailInput.dispatchEvent('input'); // Trigger React/Vue bindings
+
+  console.log('   Typing email...');
+  await emailInput.focus();
+  await page.keyboard.type(creds.email, { delay: 50 });
+  await emailInput.dispatchEvent('input');
   await page.waitForTimeout(1000);
-  
-  // Find and click next button
+
+  // Click Next after email
+  console.log('🔘 Clicking Next...');
   const nextBtn = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.SUBMIT_BUTTONS);
   if (nextBtn) {
     await nextBtn.click();
-    console.log('   Clicked Next');
+    console.log('   ✅ Clicked Next');
   } else {
-    // Try pressing Enter as fallback
-    console.log('   No Next button found, pressing Enter...');
+    console.log('   ⚠️ No Next button found, pressing Enter...');
     await page.keyboard.press('Enter');
   }
   
-  // Wait for navigation to complete (if any) to avoid context loss
+  // Wait for password field to appear
   try {
-    await page.waitForLoadState({ timeout: 30000 });
+    await page.waitForLoadState('networkidle', { timeout: 30000 });
   } catch (e) {
-    // No navigation occurred or timeout - continue anyway
+    console.log('   (Load state timeout, continuing)');
   }
+  await page.waitForTimeout(2000); // extra buffer
 
   console.log('🔑 Entering password...');
   const pwdField = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.PASSWORD_INPUTS);
@@ -206,7 +218,9 @@ async function smartLogin(page, creds) {
     throw new Error('Password input not found on login page');
   }
   
-  await pwdField.fill(creds.password);
+  console.log('   Typing password...');
+  await pwdField.focus();
+  await page.keyboard.type(creds.password, { delay: 50 });
   await pwdField.dispatchEvent('input');
   await page.waitForTimeout(1000);
   
@@ -222,7 +236,7 @@ async function smartLogin(page, creds) {
   
   // Wait for navigation to complete (if any)
   try {
-    await page.waitForLoadState({ timeout: 30000 });
+    await page.waitForLoadState("networkidle", { timeout: 30000 });
   } catch (e) {
     // Continue if no navigation
   }
@@ -240,39 +254,69 @@ async function smartLogin(page, creds) {
     await staySignedInBtn.click();
     // Wait for possible navigation after confirming
     try {
-      await page.waitForLoadState({ timeout: 30000 });
+      await page.waitForLoadState("networkidle", { timeout: 30000 });
     } catch (e) {
       // No navigation or timeout
     }
   }
 
-  // Detect if MFA is required
-  console.log('🔍 Checking for MFA challenge...');
+  // Wait and poll for MFA prompt or "Stay signed in" prompt (may take a few seconds)
+  console.log('🔍 Checking for MFA challenge or "Stay signed in"...');
   let mfaDetected = false;
-  let codeInput = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.MFA_INPUTS);
+  let staySignedInDetected = false;
+  let codeInput = null;
   
-  if (codeInput) {
-    mfaDetected = true;
-    console.log('   MFA prompt detected');
-  } else {
-    // Additional detection: check page text for MFA indicators
+  // Poll for up to 15 seconds
+  for (let i = 0; i < 7; i++) {
+    // Check MFA input
+    codeInput = await MicrosoftLoginSelectors.findElement(page, MicrosoftLoginSelectors.MFA_INPUTS);
+    if (codeInput) {
+      mfaDetected = true;
+      console.log('   MFA prompt detected');
+      break;
+    }
+    
+    // Check for "Stay signed in?" prompt
+    const staySignedInBtn = await MicrosoftLoginSelectors.findElement(page, [
+      'input[type="submit"][value="Yes"]',
+      'button:has-text("Yes")',
+      'button:has-text("Stay signed in")',
+      '#idBtn_Back'
+    ]);
+    if (staySignedInBtn) {
+      staySignedInDetected = true;
+      console.log('   "Stay signed in?" prompt detected - clicking Yes');
+      await staySignedInBtn.click();
+      try {
+        await page.waitForLoadState("networkidle", { timeout: 30000 });
+      } catch (e) {}
+      // After clicking Yes, continue polling for MFA
+      await page.waitForTimeout(2000);
+      continue;
+    }
+    
+    // Check page text for MFA indicators
     const text = await page.textContent('body') || '';
     if (text.includes('verify') || text.includes('authentication') || 
-        text.includes('two-step') || text.includes('security code')) {
+        text.includes('two-step') || text.includes('security code') ||
+        text.includes('Enter code')) {
       console.log('   MFA indicators found in page text');
-      mfaDetected = true;
-      // Try one more broad search for any numeric input
+      // Try to find 6-digit input
       const allInputs = await page.$$('input');
       for (const inp of allInputs) {
         const type = await inp.getAttribute('type') || '';
         const maxLength = await inp.getAttribute('maxlength') || '';
         if ((type === 'tel' || type === 'number' || type === 'text') && maxLength === '6') {
           codeInput = inp;
+          mfaDetected = true;
           console.log('   Found 6-digit input field');
           break;
         }
       }
+      if (codeInput) break;
     }
+    
+    await page.waitForTimeout(2000);
   }
 
   // If MFA detected
@@ -304,7 +348,7 @@ async function smartLogin(page, creds) {
       
       // Wait for navigation after MFA submission
       try {
-        await page.waitForLoadState({ timeout: 30000 });
+        await page.waitForLoadState("networkidle", { timeout: 30000 });
       } catch (e) {
         // Continue even if no navigation
       }
@@ -346,6 +390,13 @@ async function smartLogin(page, creds) {
 
   // Final check: Are we on the form?
   if (MicrosoftLoginSelectors.isLoginPage(page.url())) {
+    // Save debug screenshot before throwing
+    try {
+      await page.screenshot({ path: path.join(__dirname, '../config/auth-failed.png'), fullPage: true });
+      console.log('📸 Debug screenshot saved to config/auth-failed.png');
+    } catch (e) {
+      console.log('   (Failed to save screenshot)');
+    }
     throw new Error('Authentication failed: Still on login page');
   }
 
@@ -365,7 +416,7 @@ async function fillAndSubmit(page, dateStr) {
 
   // Ensure page is fully loaded and stable after authentication
   try {
-    await page.waitForLoadState({ timeout: 30000 });
+    await page.waitForLoadState("networkidle", { timeout: 30000 });
   } catch (e) {
     console.log('   (Load state timeout, continuing)');
   }
@@ -518,6 +569,16 @@ async function fillAndSubmit(page, dateStr) {
       const context = page.context();
       await context.storageState({ path: AUTH_STATE });
       console.log('💾 Auth state saved for potential reuse.');
+      
+      // Mark entry as submitted
+      try {
+        entries.status = 'submitted';
+        fs.writeFileSync(entryFile, JSON.stringify(entries, null, 2));
+        console.log(`✅ Entry updated: ${entryFile} → status: "submitted"`);
+      } catch (e) {
+        console.warn('   (Failed to update entry file status)');
+      }
+      
       return true;
     }
 
