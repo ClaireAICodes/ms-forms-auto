@@ -344,7 +344,7 @@ async function main() {
     learningTopic,
     otherItems,
     otherEvents: otherEvents.map(e => ({ title: e.title, time: `${e.startSGT}-${e.endSGT}`, hours: e.durationHours })),
-    _errors: errors.length > 0 ? errors : undefined,
+    _errors: errors.length > 0 ? errors : null,
   };
   
   console.log(JSON.stringify(result, null, 2));

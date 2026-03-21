@@ -116,27 +116,48 @@ Reads today's entry from `daily-entries/YYYY-MM-DD.json` and submits.
 | `config/form-values.json` | Legacy form value defaults | ❌ |
 | `daily-entries/` | Daily submission audit trail | ✅ |
 
-## MFA Handling
+## MFA Handling (Improved)
 
-This skill supports Microsoft number-matching MFA with daily re-authentication:
+This skill now **intelligently handles both MFA and non-MFA scenarios**:
 
-**Why daily MFA?** Microsoft's Forms-specific OIDC cookie (`OIDCAuth.forms`) expires in ~1 hour. Your org's security policy requires frequent re-authentication, so a fresh login is needed each day.
+### Smart Behavior
 
-**Daily flow:**
-1. 6 PM cron triggers in main session → asks Master for 6-digit Authenticator code
-2. Code entered immediately via `submit-with-mfa.js` (login + submit in ONE browser session)
-3. The browser stays open throughout — OIDC cookie is fresh at submit time
+1. **Auto-detection**: The script attempts credential login first, then checks if MFA is required
+2. **Flexible invocation**:
+   - `node scripts/submit-with-mfa.js` - Tries credentials only; if MFA appears, waits 30s for manual code entry or exits with code 2
+   - `node scripts/submit-with-mfa.js --code XXXXXX` - Provides MFA code upfront; uses it if MFA appears, otherwise proceeds
+3. **Graceful fallback**: If credentials alone are sufficient (no MFA prompt), it works without requiring a code
+4. **Exit codes**:
+   - `0` — Success
+   - `1` — General error / invalid credentials
+   - `2` — MFA required but no code provided (use --code flag)
+   - `3` — MFA code wrong or expired
+   - `4` — Form submission failed
 
-**If you need to manually submit:**
-```bash
-xvfb-run --auto-servernum node scripts/submit-with-mfa.js --code XXXXXX
+### Recommended Usage
+
+**For daily cron (6 PM SGT):**
 ```
+node scripts/submit-with-mfa.js --code [MFA_CODE_HERE]
+```
+This ensures speed (code ready) and handles both cases:
+- If MFA appears → code is used immediately
+- If no MFA → code is ignored, submission proceeds
 
-**Exit codes:**
-- `0` — Success
-- `1` — General error
-- `2` — MFA code wrong or expired
-- `3` — Form submission failed
+**For manual testing (unknown MFA requirement):**
+```
+node scripts/submit-with-mfa.js
+```
+The script will wait 30 seconds on the MFA screen if needed, allowing you to manually type the code from your Authenticator app.
+
+### Why This Works
+
+Microsoft's M365 authentication can be inconsistent:
+- Sometimes the OIDC cookie from previous login is still valid → no MFA needed
+- Sometimes the cookie expired → MFA required
+- Sometimes conditional access policies trigger MFA based on IP/device
+
+The new logic eliminates the "always ask for MFA" problem by making the code optional and only using it when the MFA prompt actually appears.
 
 ## Troubleshooting
 

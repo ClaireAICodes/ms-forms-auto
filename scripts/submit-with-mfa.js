@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 /**
- * Combined MFA Login + Form Submit in one browser session.
+ * Smart Login + Form Submit - Handles both MFA and non-MFA scenarios.
  * 
- * USAGE: node submit-with-mfa.js --code XXXXXX [--date 2026-03-18]
+ * USAGE:
+ *   node submit-with-mfa.js --code XXXXXX [--date 2026-03-18]   # When MFA may be required
+ *   node submit-with-mfa.js [--date 2026-03-18]                # Skip MFA attempt (pure credential login)
  * 
- * This script:
- * 1. Launches headed browser (xvfb-run)
- * 2. Navigates to the form → triggers MFA login flow
- * 3. Enters the 6-digit MFA code immediately (before it expires)
- * 4. Once authenticated, fills and submits the form
- * 5. Saves updated storageState for potential reuse
+ * This script intelligently handles two scenarios:
+ * 1. MFA required: Enters credentials, detects MFA prompt, enters code
+ * 2. No MFA: Enters credentials and proceeds directly to form
  * 
- * All in ONE session — the OIDC cookie stays fresh throughout.
+ * All in ONE browser session — OIDC cookie stays fresh throughout.
  * 
  * Exit codes:
  *   0 = success
- *   1 = general error
- *   2 = MFA code wrong or expired
- *   3 = form submission failed
+ *   1 = general error / credentials invalid
+ *   2 = MFA required but no code provided (use --code)
+ *   3 = MFA code wrong or expired
+ *   4 = form submission failed
  */
 
 const { chromium } = require('playwright');
@@ -35,99 +35,133 @@ const FORM_URL = 'https://forms.cloud.microsoft/r/LsxLaEv13i';
 const args = process.argv.slice(2);
 let mfaCode = null;
 let targetDate = new Date().toISOString().split('T')[0];
+let requireMFAAutoDetect = true; // By default, try to auto-detect if MFA is needed
 
 for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--code') mfaCode = args[++i];
+  if (args[i] === '--code') {
+    mfaCode = args[++i];
+    requireMFAAutoDetect = false; // If code provided, we'll use it if MFA appears
+  }
   if (args[i] === '--date') targetDate = args[++i];
+  if (args[i] === '--force-mfa') requireMFAAutoDetect = false;
+  if (args[i] === '--no-mfa') requireMFAAutoDetect = true;
 }
 
-if (!mfaCode) {
-  console.error('Usage: node submit-with-mfa.js --code XXXXXX [--date YYYY-MM-DD]');
-  process.exit(1);
+// Validate: If we're in strict mode (no auto-detect) and no code provided, error
+if (!requireMFAAutoDetect && !mfaCode) {
+  console.error('❌ MFA required but no code provided. Use: node submit-with-mfa.js --code XXXXXX');
+  process.exit(2);
 }
 
-async function loginWithMFA(page, code) {
-  const creds = JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8'));
-
-  console.log('🔐 Navigating to form (triggers MFA login)...');
+async function smartLogin(page, creds) {
+  console.log('🔐 Navigating to form...');
   await page.goto(FORM_URL, { waitUntil: 'networkidle', timeout: 60000 });
   await page.waitForTimeout(5000);
 
-  // If already on login page
-  if (page.url().includes('login.microsoftonline.com')) {
-    console.log('📧 Entering email...');
-    await page.fill('input[type="email"]', creds.email);
-    const nextBtn = await page.$('input[type="submit"][value="Next"]');
-    if (nextBtn) await nextBtn.click();
-    await page.waitForTimeout(4000);
-
-    console.log('🔑 Entering password...');
-    const pwdField = await page.$('input[type="password"]');
-    if (pwdField) {
-      await pwdField.fill(creds.password);
-      const signInBtn = await page.$('input[type="submit"][value="Sign in"]');
-      if (signInBtn) await signInBtn.click();
-    }
-    await page.waitForTimeout(3000);
-    
-    // Check for error messages after credential entry
-    const pageContent = await page.content();
-    if (pageContent.includes('Incorrect') || pageContent.includes('Invalid') || pageContent.includes('error')) {
-      throw new Error('Login failed: Invalid email or password, or account locked');
-    }
+  // Check if already on form (already authenticated via storageState)
+  const currentUrl = page.url();
+  if (!currentUrl.includes('login.microsoftonline.com')) {
+    console.log('✅ Already authenticated (storageState valid)');
+    return true;
   }
 
-  // MFA challenge - use broad detection
+  console.log('📧 Entering email...');
+  const emailInput = await page.$('input[type="email"]');
+  if (!emailInput) {
+    throw new Error('Email input not found on login page');
+  }
+  await emailInput.fill(creds.email);
+  const nextBtn = await page.$('input[type="submit"][value="Next"]');
+  if (nextBtn) await nextBtn.click();
+  await page.waitForTimeout(4000);
+
+  console.log('🔑 Entering password...');
+  const pwdField = await page.$('input[type="password"]');
+  if (!pwdField) {
+    throw new Error('Password input not found');
+  }
+  await pwdField.fill(creds.password);
+  const signInBtn = await page.$('input[type="submit"][value="Sign in"]');
+  if (signInBtn) await signInBtn.click();
+  await page.waitForTimeout(3000);
+
+  // Check for immediate error after credentials
+  const pageContent = await page.content();
+  if (pageContent.includes('Incorrect') || pageContent.includes('Invalid') || pageContent.includes('error') || pageContent.includes('locked')) {
+    throw new Error('Login failed: Invalid email/password or account locked');
+  }
+
+  // Detect if MFA is required
+  let mfaDetected = false;
   let codeInput = await page.$('input[type="tel"]');
+  if (!codeInput) codeInput = await page.$('input[placeholder*="code" i]');
+  if (!codeInput) codeInput = await page.$('input[name*="verification" i]');
+  
   if (!codeInput) {
-    codeInput = await page.$('input[placeholder*="code" i]');
-  }
-  if (!codeInput) {
-    codeInput = await page.$('input[name*="verification" i]');
-  }
-  if (!codeInput) {
-    // Find any visible input not already used
+    // Broad search for any input that looks like verification
     const allInputs = await page.$$('input');
     for (const inp of allInputs) {
       const type = await inp.getAttribute('type') || '';
       const placeholder = await inp.getAttribute('placeholder') || '';
+      const name = await inp.getAttribute('name') || '';
       if ((type === 'tel' || type === 'text' || type === 'number') && 
-          (placeholder.includes('code') || placeholder.includes('verification') || placeholder.includes('digit'))) {
+          (placeholder.includes('code') || placeholder.includes('verification') || placeholder.includes('digit') ||
+           name.includes('verification') || name.includes('code'))) {
         codeInput = inp;
+        mfaDetected = true;
         break;
       }
     }
-  }
-  if (codeInput) {
-    console.log('🔢 Entering MFA code...');
-    await codeInput.fill(code);
-    const submitBtn = await page.$('input[type="submit"]');
-    if (submitBtn) await submitBtn.click();
-    await page.waitForTimeout(4000);
-
-    // Stay signed in?
-    const yesBtn = await page.$('input[type="submit"][value="Yes"]');
-    if (yesBtn) {
-      await yesBtn.click();
-      await page.waitForTimeout(3000);
-    }
-    
-    // Check for MFA errors
-    const afterMFAContent = await page.content();
-    if (afterMFAContent.includes('Incorrect') || afterMFAContent.includes('Invalid') || afterMFAContent.includes('code is incorrect')) {
-      throw new Error('MFA code wrong or expired');
-    }
-    
-    // Wait for redirect back to form
-    await page.waitForTimeout(3000);
   } else {
-    console.log('ℹ️  No MFA prompt — may already be authenticated');
+    mfaDetected = true;
   }
 
-  // Check if we landed on the form
+  // If MFA detected
+  if (mfaDetected) {
+    console.log('🔐 MFA challenge detected');
+    
+    if (mfaCode) {
+      // Code provided - enter it
+      console.log('🔢 Entering MFA code...');
+      await codeInput.fill(mfaCode);
+      const submitBtn = await page.$('input[type="submit"]');
+      if (submitBtn) await submitBtn.click();
+      await page.waitForTimeout(4000);
+
+      // "Stay signed in?" prompt
+      const yesBtn = await page.$('input[type="submit"][value="Yes"]');
+      if (yesBtn) {
+        await yesBtn.click();
+        await page.waitForTimeout(3000);
+      }
+
+      // Check for MFA errors
+      const afterMFAContent = await page.content();
+      if (afterMFAContent.includes('Incorrect') || afterMFAContent.includes('Invalid') || afterMFAContent.includes('code is incorrect')) {
+        throw new Error('MFA code wrong or expired');
+      }
+      
+      await page.waitForTimeout(3000);
+    } else {
+      // No code available and MFA detected - we can't proceed
+      console.error('❌ MFA required but no code provided. Use --code flag.');
+      console.log('   Waiting 30s for manual code entry (optional)...');
+      // Keep browser open for 30s in case user wants to manually enter
+      await page.waitForTimeout(30000);
+      
+      // Check if we're still on login page
+      if (page.url().includes('login.microsoftonline.com')) {
+        throw new Error('MFA required but no code provided');
+      }
+      // If somehow we got past MFA (user manually entered), continue
+    }
+  } else {
+    console.log('✅ No MFA prompt — login successful with credentials only');
+  }
+
+  // Final check: Are we on the form?
   if (page.url().includes('login.microsoftonline.com')) {
-    console.error('❌ Still on login page — MFA code may be wrong or expired');
-    return false;
+    throw new Error('Authentication failed: Still on login page');
   }
 
   console.log('✅ Authenticated! Now on form page.');
@@ -135,7 +169,6 @@ async function loginWithMFA(page, code) {
 }
 
 async function fillAndSubmit(page, dateStr) {
-  // Load entry file
   const entryFile = path.join(ENTRIES_DIR, `${dateStr}.json`);
   if (!fs.existsSync(entryFile)) {
     console.error(`❌ No entry file found: ${entryFile}`);
@@ -145,14 +178,13 @@ async function fillAndSubmit(page, dateStr) {
   const entries = JSON.parse(fs.readFileSync(entryFile, 'utf8'));
   console.log(`\n📋 Filling form for ${dateStr}...`);
 
-  // Wait for form to fully load
   await page.waitForTimeout(3000);
 
-  // Scroll to load all lazy-rendered fields
+  // Scroll to load all fields
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await page.waitForTimeout(2000);
 
-  // Collect all visible text inputs
+  // Collect visible text inputs
   const allInputs = await page.$$('input');
   const textInputs = [];
   for (const inp of allInputs) {
@@ -189,6 +221,8 @@ async function fillAndSubmit(page, dateStr) {
       if (placeholder?.includes('number')) await page.keyboard.press('Tab');
       console.log(`  ${field.label} → "${field.value}"`);
       await page.waitForTimeout(200);
+    } else {
+      console.warn(`  ${field.label} → WARNING: Input field ${field.index} not found`);
     }
   }
 
@@ -205,7 +239,7 @@ async function fillAndSubmit(page, dateStr) {
     if (pageText.includes('Your response was submitted') || pageText.includes('submitted')) {
       console.log('✅ FORM SUBMITTED SUCCESSFULLY!\n');
       
-      // Save updated auth state
+      // Save updated auth state for future reuse
       const context = page.context();
       await context.storageState({ path: AUTH_STATE });
       console.log('💾 Auth state saved for potential reuse.');
@@ -221,25 +255,34 @@ async function fillAndSubmit(page, dateStr) {
 }
 
 async function main() {
-  console.log(`🚀 MS Forms Auto-Submit with MFA`);
+  console.log(`🚀 MS Forms Smart Submit`);
   console.log(`   Date: ${targetDate}`);
   console.log(`   Time: ${new Date().toISOString()}\n`);
 
+  // Check credentials exist
+  if (!fs.existsSync(CREDS_FILE)) {
+    console.error(`❌ Credentials file not found: ${CREDS_FILE}`);
+    console.error('   Run: node scripts/setup-credentials.js');
+    process.exit(1);
+  }
+
+  const creds = JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8'));
+
   const browser = await chromium.launch({
-    headless: false,  // Required for MFA
+    headless: false,
     args: ['--no-sandbox']
   });
   const page = await browser.newPage();
 
   try {
-    // Step 1: Login with MFA
-    const loggedIn = await loginWithMFA(page, mfaCode);
+    // Step 1: Smart login (handles MFA or no-MFA)
+    const loggedIn = await smartLogin(page, creds);
     if (!loggedIn) {
       await browser.close();
       process.exit(2);
     }
 
-    // Step 2: Fill and submit form (already on form page)
+    // Step 2: Fill and submit form
     const submitted = await fillAndSubmit(page, targetDate);
     await browser.close();
 
@@ -248,7 +291,7 @@ async function main() {
       process.exit(0);
     } else {
       console.log('❌ Form submission failed');
-      process.exit(3);
+      process.exit(4);
     }
 
   } catch (err) {
