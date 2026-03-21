@@ -28,3 +28,7 @@ validation-screenshots/
 screenshots/
 *.png
 *.html
+
+# Built/Packaged artifacts
+*.skill
+dist/

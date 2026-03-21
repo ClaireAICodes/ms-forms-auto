@@ -165,3 +165,4 @@ The new logic eliminates the "always ask for MFA" problem by making the code opt
 - **Calendar fetch fails**: Script uses graceful fallbacks (0/NA defaults), form still submits
 - **Form URL changed**: Update the URL in `scripts/submit-daily.js`
 - **Wrong field values**: Run `node scripts/calendar-fetch.js --date YYYY-MM-DD` to verify calendar data
+- **Detailed test plan**: See `references/TESTING_AUTH_WORKFLOW.md` for comprehensive authentication workflow testing scenarios
