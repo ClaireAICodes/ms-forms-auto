@@ -272,6 +272,12 @@ function extractContentDevTopic(event) {
   return topic.length > 3 ? topic.substring(0, 200) : event.title;
 }
 
+function formatDateForForm(dateStr) {
+  // Convert YYYY-MM-DD to M/d/yyyy for MS Forms
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return `${month}/${day}/${year}`;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   
@@ -328,7 +334,7 @@ async function main() {
   const learningTopic = buildLearningTopic(outlookEvents);
   
   const result = {
-    date: targetDate,
+    date: formatDateForForm(targetDate),
     trainingHours: Math.round(trainingHours * 100) / 100,
     trainingEvents: trainingEvents.map(e => ({ title: e.title, time: `${e.startSGT}-${e.endSGT}`, hours: e.durationHours })),
     contentDevHours: Math.round(contentDevHours * 100) / 100,
