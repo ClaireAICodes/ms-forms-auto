@@ -20,3 +20,11 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+screenshots/
+audit-screenshots/
+# Audit and debug output
+audit-screenshots/
+validation-screenshots/
+screenshots/
+*.png
+*.html

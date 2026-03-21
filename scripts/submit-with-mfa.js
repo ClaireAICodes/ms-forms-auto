@@ -211,13 +211,19 @@ async function smartLogin(page, creds) {
   }
   
   await page.waitForTimeout(3000);
-  
-  // Check for error messages after credential entry
-  const pageContent = await page.content();
-  if (pageContent.includes('Incorrect') || pageContent.includes('Invalid') || 
-      pageContent.includes('error') || pageContent.includes('locked') ||
-      pageContent.includes('account doesn\'t exist')) {
-    throw new Error('Login failed: Invalid email/password or account locked');
+
+  // Check for "Stay signed in?" prompt (common after credentials)
+  const staySignedInSelectors = [
+    'input[type="submit"][value="Yes"]',
+    'button:has-text("Yes")',
+    'button:has-text("Stay signed in")',
+    '#idBtn_Back'
+  ];
+  const staySignedInBtn = await MicrosoftLoginSelectors.findElement(page, staySignedInSelectors);
+  if (staySignedInBtn) {
+    console.log('   "Stay signed in?" prompt detected, clicking Yes...');
+    await staySignedInBtn.click();
+    await page.waitForTimeout(3000);
   }
 
   // Detect if MFA is required
@@ -424,7 +430,8 @@ async function fillAndSubmit(page, dateStr) {
   ];
 
   for (const field of fields) {
-    if (!field.value) {
+    // Allow 0 as valid value, skip only undefined, null, or empty string
+    if (field.value === undefined || field.value === null || field.value === '') {
       console.log(`  ${field.label} → SKIPPED (empty)`);
       continue;
     }
@@ -457,6 +464,20 @@ async function fillAndSubmit(page, dateStr) {
     if (pageText.includes('Your response was submitted') || pageText.includes('submitted')) {
       console.log('✅ FORM SUBMITTED SUCCESSFULLY!\n');
       
+      // Save audit screenshot and HTML
+      try {
+        const auditDir = path.join(ROOT_DIR, 'audit-screenshots');
+        if (!fs.existsSync(auditDir)) fs.mkdirSync(auditDir, { recursive: true });
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const auditBase = path.join(auditDir, 'submitted-' + targetDate + '-' + timestamp);
+        await page.screenshot({ path: auditBase + '.png', fullPage: true });
+        const html = await page.content();
+        fs.writeFileSync(auditBase + '.html', html.substring(0, 200000));
+        console.log('   📸 Audit saved: audit-screenshots/submitted-' + targetDate + '-' + timestamp + '.png');
+      } catch (e) {
+        console.log('   (Failed to save audit screenshot)');
+      }
+      
       // Save updated auth state for future reuse
       const context = page.context();
       await context.storageState({ path: AUTH_STATE });
@@ -465,6 +486,15 @@ async function fillAndSubmit(page, dateStr) {
     }
 
     console.error('⚠️  Unclear result. Page text:', pageText.substring(0, 300));
+    // Save debug info
+    try {
+      await page.screenshot({ path: 'screenshots/submit-unclear.png', fullPage: true });
+      const html = await page.content();
+      require('fs').writeFileSync('screenshots/submit-unclear.html', html.substring(0, 100000));
+      console.log('   📸 Debug saved: screenshots/submit-unclear.png, submit-unclear.html');
+    } catch (e) {
+      console.log('   (Failed to save debug)');
+    }
     return false;
   }
 
